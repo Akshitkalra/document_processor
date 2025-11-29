@@ -1,0 +1,34 @@
+# Production stack for VPS deployment.
+#
+#   1. Put your keys in backend/.env  (cp backend/.env.example backend/.env)
+#   2. docker compose up -d --build
+#   3. Open http://<your-server-ip>/   (everything is served on port 80)
+#
+# nginx (frontend) serves the built React app and proxies /api + /health to the
+# backend container, so only port 80 is exposed publicly. Tesseract OCR is baked
+# into the backend image — nothing to install on the host.
+services:
+  backend:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      # Tesseract is installed in the image and on PATH; force-clear any
+      # Windows TESSERACT_CMD that might be present in .env.
+      - TESSERACT_CMD=
+    volumes:
+      - backend-data:/app/data   # persist registry, uploaded files, summaries
+    expose:
+      - "8000"                    # internal only; reached via the frontend proxy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"                   # public entrypoint
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend-data:

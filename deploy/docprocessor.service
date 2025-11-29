@@ -1,0 +1,18 @@
+[Unit]
+Description=Document Processor backend (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User={{USER}}
+WorkingDirectory={{APP_DIR}}/backend
+EnvironmentFile={{APP_DIR}}/backend/.env
+# Single worker: the document registry is process-local state.
+ExecStart={{APP_DIR}}/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=on-failure
+RestartSec=3
+# Model loading + OCR are memory/CPU heavy; give generous startup time.
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

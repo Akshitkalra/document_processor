@@ -1,0 +1,29 @@
+# Local development stack: hot-reloading frontend (Vite) + backend.
+# Usage:  docker compose -f docker-compose.dev.yml up --build
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      # Tesseract is on PATH inside the Linux image; ignore any Windows path
+      # that may be set in .env for local (non-Docker) runs.
+      - TESSERACT_CMD=
+    volumes:
+      - ./backend/data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+    environment:
+      - VITE_API_BASE=http://localhost:8000
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - backend

@@ -6,14 +6,33 @@ Gemini SDK directly.
 """
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import Optional
 
 from google import genai
+from google.genai import errors as genai_errors
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger("llm")
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Retry on rate limits (429) and transient server errors (5xx)."""
+    if isinstance(exc, genai_errors.ServerError):
+        return True
+    if isinstance(exc, genai_errors.ClientError):
+        code = getattr(exc, "code", None)
+        return code == 429 or "RESOURCE_EXHAUSTED" in str(exc)
+    return False
 
 
 @lru_cache(maxsize=1)
@@ -38,6 +57,28 @@ def _to_contents(messages: list[dict]) -> list[dict]:
     return contents
 
 
+@retry(
+    retry=retry_if_exception(_is_retryable),
+    wait=wait_exponential(multiplier=2, min=4, max=90),
+    stop=stop_after_attempt(6),
+    reraise=True,
+    before_sleep=lambda s: logger.warning(
+        "Gemini rate-limited/transient error; retrying (attempt %d)…",
+        s.attempt_number,
+    ),
+)
+def _generate(model: str, contents: list[dict], system: str, max_tokens: int):
+    client = get_client()
+    return client.models.generate_content(
+        model=model,
+        contents=contents,
+        config={
+            "system_instruction": system,
+            "max_output_tokens": max_tokens,
+        },
+    )
+
+
 def complete(
     *,
     system: str,
@@ -45,14 +86,21 @@ def complete(
     model: Optional[str] = None,
     max_tokens: int = 4096,
 ) -> str:
-    """Run a single Gemini completion and return the response text."""
-    client = get_client()
-    response = client.models.generate_content(
+    """Run a single Gemini completion and return the response text.
+
+    Automatically retries with exponential backoff on rate limits (429) and
+    transient server errors — important when summarising large documents, which
+    issue many calls in quick succession.
+    """
+    response = _generate(
         model=model or settings.gemini_model,
         contents=_to_contents(messages),
-        config={
-            "system_instruction": system,
-            "max_output_tokens": max_tokens,
-        },
+        system=system,
+        max_tokens=max_tokens,
     )
-    return (response.text or "").strip()
+    text = (response.text or "").strip()
+    if not text:
+        # Model returned no text (e.g. blocked or hit the token cap before
+        # emitting any). Surface a clear hint rather than a silent empty string.
+        logger.warning("Gemini returned empty text (model=%s).", model)
+    return text

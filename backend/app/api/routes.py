@@ -38,19 +38,30 @@ async def upload_document(
     file: UploadFile = File(...),
 ) -> UploadResponse:
     """Accept a file, persist it, and kick off background ingestion."""
-    contents = await file.read()
-    size = len(contents)
-    if size == 0:
-        raise HTTPException(status_code=400, detail="Empty file.")
-    if size > settings.max_upload_mb * 1024 * 1024:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds {settings.max_upload_mb} MB limit.",
-        )
-
     doc_id = uuid.uuid4().hex
     path = store.file_path(doc_id, file.filename or "upload")
-    path.write_bytes(contents)
+
+    # Stream to disk in 1 MB chunks so a large (e.g. 400-page scanned) PDF never
+    # has to fit entirely in memory. Enforce the size limit incrementally.
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    size = 0
+    try:
+        with path.open("wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds {settings.max_upload_mb} MB limit.",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        path.unlink(missing_ok=True)
+        raise
+
+    if size == 0:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Empty file.")
 
     meta = DocumentMeta(
         id=doc_id,

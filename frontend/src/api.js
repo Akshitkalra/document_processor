@@ -7,7 +7,12 @@ async function handle(res) {
     let detail = res.statusText;
     try {
       const body = await res.json();
-      detail = body.detail || detail;
+      if (typeof body.detail === "string") {
+        detail = body.detail;
+      } else if (Array.isArray(body.detail)) {
+        // FastAPI validation errors come back as an array of objects.
+        detail = body.detail.map((e) => e.msg || JSON.stringify(e)).join("; ");
+      }
     } catch (_) {
       /* ignore */
     }
